@@ -97,9 +97,11 @@ usage:
  wow64helper.exe 1 PID kernelFuncName strParam
  wow64helper.exe 2 PID kernelFuncName pvoid64_value
 
-example: wow64helper.exe 1 2332 GetModuleHandleW "x-studio365.lua.debug.x64.dll"
-         wow64helper.exe 2 2332 FreeLibrary 7393439
-         wow64helper.exe 3 2332 FreeLibraryAndExitThread 7393439 0
+example: 
+         WowRemoteExecuteKernelProc64(1 string arg)    ---> wow64helper.exe 1 2332 GetModuleHandleW "x-studio365.lua.debug.x64.dll"
+         WowRemoteExecuteKernelProc64(1 integer arg)  ---> wow64helper.exe 2 2332 FreeLibrary 7393439
+         WowRemoteExecuteKernelProc64(2 integer arg)  ---> wow64helper.exe 3 2332 FreeLibraryAndExitThread 7393439 0
+         WowRemoteInject64                                            ---> wow64helper.exe 4 2332
 */
 int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 {
