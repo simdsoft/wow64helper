@@ -2,15 +2,30 @@
 #include <Shlwapi.h>
 #include <ShellAPI.h>
 #include <stdint.h>
-#include <list>
+#include <vector>
+#include <assert.h>
 
-#define _ENABLE_INJECT_DEBUG 0
+#define _ENABLE_INJECT_DEBUG 1
 
 #define sz_align(d,a) (((d) + ((a) - 1)) & ~((a) - 1))  
 #define calc_stack_size(n) sz_align((n) * 8, 16) + 8
 
 static const auto teststacksize = calc_stack_size(4);
 // 48 89 44 24 28       mov         qword ptr [rsp+28h],rax
+
+typedef int(*RtlCreateUserThreadProc)(
+    void*,					// ProcessHandle
+    void*,                  // SecurityDescriptor
+    DWORD64,                // CreateSuspended
+    DWORD64,                // StackZeroBits
+    void*,                  // StackReserved
+    void*,                  // StackCommit
+    void*,		            // StartAddress
+    void* StartParameter,   // StartParameter
+    PHANDLE,                // ThreadHandle
+    void* lpClientID    // ClientID)
+    );
+
 inline
 char* transcode(const wchar_t* source)
 {
@@ -44,45 +59,39 @@ void split(_Elem* s, const _Elem delim, const _Fty& op)
 }
 
 inline
-void* valloc(HANDLE hProcess, size_t size)
+void* xxalloc(HANDLE hProcess, size_t size, DWORD flProtect = PAGE_READWRITE)
 {
-    return VirtualAllocEx(hProcess, NULL, size, MEM_COMMIT, PAGE_READWRITE);
+    return VirtualAllocEx(hProcess, NULL, size, MEM_COMMIT, flProtect);
 }
 
 inline
-void vfree(HANDLE hProcess, void* p)
+void xxfree(HANDLE hProcess, void* p)
 {
     VirtualFreeEx(hProcess, p, 0, MEM_RELEASE);
 }
 
 inline
-void* vmemdup(HANDLE hProcess, const void* data, size_t size)
-{
-    auto vmem = valloc(hProcess, size);
-    vwrite(vmem, vmem, data, size);
-    return vmem;
-}
-
-inline
-BOOL vwrite(HANDLE hProcess, void*p, const void* data, size_t size)
+BOOL xxwrite(HANDLE hProcess, void*p, const void* data, size_t size)
 {
     return WriteProcessMemory(hProcess, p, data, size, NULL);
 }
 
-char* strdup(HANDLE hProcess, const char* str)
+inline
+void* xxmemdup(HANDLE hProcess, const void* data, size_t size, DWORD fProtect = PAGE_READWRITE)
 {
-    auto size = (strlen(str) + 1);
-    auto rdata = valloc(hProcess, size);
-    vwrite(hProcess, rdata, str, size);
-    return (char*)rdata;
+    auto vmem = xxalloc(hProcess, size, fProtect);
+    xxwrite(hProcess, vmem, data, size);
+    return vmem;
 }
 
-wchar_t* wcsdup(HANDLE hProcess, const wchar_t* str)
+char* xxstrdup(HANDLE hProcess, const char* str)
 {
-    auto size = (wcslen(str) + 1) << 1;
-    auto rdata = valloc(hProcess, size);
-    vwrite(hProcess, rdata, str, size);
-    return (wchar_t*)rdata;
+    return (char*)xxmemdup(hProcess, str, strlen(str) + 1);
+}
+
+wchar_t* xxwcsdup(HANDLE hProcess, const wchar_t* str)
+{
+    return (wchar_t*)xxmemdup(hProcess, str, (wcslen(str) + 1) << 1);
 }
 
 bool ExecuteRemoteKernelProc(HANDLE process, char* functionName, LPVOID param, DWORD& exitCode);
@@ -142,16 +151,16 @@ struct RemoteArg
         char* valuestring;
         wchar_t* valuewstring;
         uint64_t valueint = 0;
+        void* ptr;
         UNICODE_STRING* valueus;
     } value;
 };
 
-bool WowExecuteRemoteProc64_V1(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode);
-bool WowExecuteRemoteProc64_V2(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode);
-
-bool WowInject64(HANDLE hProcess, const wchar_t* lpModuleName, char* lpProcName, const wchar_t* argt, const wchar_t** argv, int argc, DWORD& exitCode);
-
-bool ConstructThunkCode(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, char*& thunkCode, std::list<RemoteArg>& args);
+/*
+ option: 0: use kernel32 CreateRemoteThread
+         1: use ntdll RtlCreateUserThread RtlExitUserThread
+*/
+bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode);
 
 int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 {
@@ -173,20 +182,12 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
         DWORD exitCode = 0;
 
-        bool rpcOK = false;
         /*
         wow64helper.exe 0 PID OSModuleName ModuleProcName paramsTypes [parameters]...
         wow64helper.exe 1 PID OSModuleName ModuleProcName paramsTypes [parameters]...
         */
-        switch (option) {
-        case 0:
-            rpcOK = WowExecuteRemoteProc64_V1(hProcess, argv[3] /*moduleName*/, transcode(argv[4])/*lpProcName*/, argv[5], argv + 6, argc - 6, exitCode);
-            break;
-        case 1:
-            ; // rpcOK = WowExecuteRemoteProc64_V2(hProcess, argv[3] /*moduleName*/, transcode(argv[4])/*lpProcName*/, argv[5], argv + 6, argc - 6, exitCode);
-            break;
-        default:;
-        }
+        bool rpcOK = WowExecuteRemoteProc64(option, hProcess, argv[3] /*moduleName*/, transcode(argv[4])/*lpProcName*/, argv[5], argv + 6, argc - 6, exitCode);
+
         if (rpcOK)
             ret = static_cast<int>(exitCode);
 
@@ -239,7 +240,7 @@ bool ExecuteRemoteKernelProcWithInjectCode(HANDLE hProcess, const char* function
                                                                                                                                 // 0xFF, 0xD0,                                                 // call        rax; The Remote Proc, 
                                                                                                                                 // 0x48, 0x83, 0xC4, 0x28,                                  // add         rsp, 28h
                                                                                                                                 // 0xC3,                                                    // ret; jmp         rax
-};
+    };
 
     HMODULE kernelModule = GetModuleHandleW(L"kernel32.dll");
     FARPROC function = GetProcAddress(kernelModule, functionName);
@@ -279,22 +280,49 @@ bool ExecuteRemoteKernelProcWithInjectCode(HANDLE hProcess, const char* function
     }
 }
 
-bool WowExecuteRemoteProc64_V1(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName,  wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode)
+bool rpcall1(int option, HANDLE hProcess, void* procAddress, void* param, DWORD& exitCode)
 {
-    std::list<RemoteArg> args;
-    char* thunkCode = nullptr;
-    ConstructThunkCode(hProcess, lpModuleName, lpProcName, argt, argv, argc, thunkCode, args);
-    return true;
+    if (option == 0) {
+        DWORD threadId;
+        HANDLE thread = CreateRemoteThread(hProcess, NULL, 0,
+            (LPTHREAD_START_ROUTINE)procAddress, param, 0, &threadId);
+
+        exitCode = 0;
+        if (thread != NULL)
+        {
+            WaitForSingleObject(thread, INFINITE);
+            GetExitCodeThread(thread, &exitCode);
+
+            CloseHandle(thread);
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    else {
+        return false;
+    }
 }
 
-bool ConstructThunkCode(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, char*& thunkCode, std::list<RemoteArg>& args)
+bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode)
 { // FOR API: CreateRemoteThread
-    thunkCode = nullptr;
+    if (option != 0 && option != 1)
+        return false; // Invalid option
+
+    HMODULE hModule = GetModuleHandleW(lpModuleName);
+    if (hModule == nullptr)
+        return false;
+    FARPROC procAddress = GetProcAddress(hModule, lpProcName);
+    if (procAddress == nullptr)
+        return false;
 
     int formatc = 0;
     if (argc == 0)
         return false;
 
+    std::vector<RemoteArg> args;
     bool result = true;
     split(argt, L';', [&](wchar_t* s, wchar_t* e) {
         if (formatc >= argc)
@@ -321,29 +349,29 @@ bool ConstructThunkCode(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName
         {
             remoteArg.type = 1;
             auto string = transcode(argv[formatc]);
-            remoteArg.value.valuestring = strdup(hProcess, string);
+            remoteArg.value.valuestring = xxstrdup(hProcess, string);
             free(string);
         }
         else if (wcscmp(s, L"ws") == 0)
         {
             remoteArg.type = 2;
-            remoteArg.value.valuewstring = wcsdup(hProcess, argv[formatc]);
+            remoteArg.value.valuewstring = xxwcsdup(hProcess, argv[formatc]);
         }
         else if (wcscmp(s, L"us") == 0)
         {
             remoteArg.type = 3;
 
-            char* struc = (char*)valloc(hProcess, sizeof(UNICODE_STRING));
+            char* struc = (char*)xxalloc(hProcess, sizeof(UNICODE_STRING));
 
             WORD length = static_cast<WORD>(wcslen(argv[formatc]));
             auto bytes = (length + 1) * 2;
-            auto rbuffer = valloc(hProcess, (length + 1) * 2);
+            auto rbuffer = xxalloc(hProcess, (length + 1) * 2);
 
-            vwrite(hProcess, struc + offsetof(UNICODE_STRING, Length), &length, 2);
-            vwrite(hProcess, struc + offsetof(UNICODE_STRING, MaximumLength), &length, 2);
-            vwrite(hProcess, struc + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
+            xxwrite(hProcess, struc + offsetof(UNICODE_STRING, Length), &length, 2);
+            xxwrite(hProcess, struc + offsetof(UNICODE_STRING, MaximumLength), &length, 2);
+            xxwrite(hProcess, struc + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
 
-            vwrite(hProcess, rbuffer, argv[formatc], bytes);
+            xxwrite(hProcess, rbuffer, argv[formatc], bytes);
         }
         else {
             // error
@@ -392,7 +420,7 @@ bool ConstructThunkCode(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName
     0x48, 0x83, 0xEC, 0x28,                                     // sub         rsp,28h ; 4 parameters + ret address = 4 * 8 + 8 = 40 = 28h
     0x49, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         r9,1122334455667784h
     0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         r8,1122334455667783h
-    0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         rdx,0
+    0x48, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         rdx,0
     // 0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         rcx,0; no need, cross transport
     0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         rax,1111111111111111h; Address of LdrLoadDll
     0xFF, 0xD0,                                                 // call        rax; call LdrLoadDll
@@ -403,57 +431,211 @@ bool ConstructThunkCode(HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName
     0x19, 0x88, 0x12, 0x19                                      // MAGIC 19881219
     */
 
-    const unsigned template_thunk_code1[] = {
+    if (option == 0) {
+        // should use ret instruction
+        const unsigned char rpc_thunk_code_template[] = {
+    #if _ENABLE_INJECT_DEBUG
+            0xCC,
+    #endif
+            0x48, 0x83, 0xEC, 0x28,                                         // sub         rsp,28h ; 4 parameters + ret address = 4 * 8 + 8 = 40 = 28h
+            //0x49, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // mov         r9,0
+            //0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // mov         r8,0
+            //0x48, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // mov         rdx,0
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // mov         rax,0; The remote Proc
+
+            0xFF, 0xD0/* call rax */,// 0x48, 0xFF, 0xE0,        // jmp         rax; jmp to LdrLoadDll
+
+            0x48, 0x83, 0xC4, 20, // add rsp, 28
+            0xC3, // ret
+            0x19, 0x88, 0x12, 0x19                                          // MAGIC 19881219
+        };
+
+        if (formatc > 1) { // The first parameter transfer by ThreadProc(void*/*rcx*/);
+            if (formatc <= 4) { // argc = [2, 4]
+                auto thunkSize = sizeof(rpc_thunk_code_template) + 10 * (formatc - 1);
+                auto stackNeeded = calc_stack_size(formatc);
+
+                auto thunkLocal = (unsigned char*)calloc(1, thunkSize);
+                auto ptr = thunkLocal;
 #if _ENABLE_INJECT_DEBUG
-        0xCC,
+                *ptr++ = 0xCC;
 #endif
-        0x48, 0x83, 0xEC, 0x28,                                         // sub         rsp,28h ; 4 parameters + ret address = 4 * 8 + 8 = 40 = 28h
-        //0x49, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // mov         r9,0
-        //0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // mov         r8,0
-        //0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // mov         rdx,0
-        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // mov         rax,0; Address of LdrLoadDll
-        0x48, 0xFF, 0xE0,                                               // jmp         rax; jmp to LdrLoadDll
-        0x19, 0x88, 0x12, 0x19                                          // MAGIC 19881219
-    };
+                // sub rsp, stackNeeded;
+                *ptr++ = 0x48;
+                *ptr++ = 0x83;
+                *ptr++ = 0xEC;
+                *ptr++ = static_cast<uint8_t>(stackNeeded);
 
-    if (formatc > 1) { // The first parameter transfer by ThreadProc(void*/*rax*/);
+                // mov rdx, ?; 2nd arg
+                *(uint16_t*)ptr = 0xBA48, ptr += sizeof(uint16_t);
+                *(uint64_t*)ptr = args[1].value.valueint, ptr += sizeof(uint64_t);
+                if (formatc > 2) {
+                    // mov r8, ?; 3rd arg
+                    *(uint16_t*)ptr = 0xB849, ptr += sizeof(uint16_t);
+                    *(uint64_t*)ptr = args[2].value.valueint, ptr += sizeof(uint64_t);
+                    if (formatc > 3) {
+                        // mov r9, ? 4th arg
+                        *(uint16_t*)ptr = 0xB949, ptr += sizeof(uint16_t);
+                        *(uint64_t*)ptr = args[3].value.valueint, ptr += sizeof(uint64_t);
+                    }
+                }
 
-        ptrdiff_t offset = 0;
+                // mov rax, ?; Address of The function
+                *(uint16_t*)ptr = 0xB848, ptr += sizeof(uint16_t);
+                *(uint64_t*)ptr = reinterpret_cast<uint64_t>(procAddress), ptr += sizeof(uint64_t);
 
-        if (formatc <= 4) { // argc = [2, 4]
-            auto thunkSize = sizeof(template_thunk_code1) + 10 * (formatc - 1);
-            auto stackNeeded = calc_stack_size(formatc);
-            if (stackNeeded > 256) {
-                thunkSize += 3; // sub rsp instruction size change from 4B to 7B
-            }
-
-            auto tclocal = (unsigned char*)calloc(1, thunkSize);
-#if _ENABLE_INJECT_DEBUG
-            *tclocal++ = 0xCC;
+                // jmp rax;
+#if 0
+                * ptr++ = 0x48;
+                *ptr++ = 0xFF;
+                *ptr++ = 0xE0;
 #endif
-            if (stackNeeded <= 256) {
-                // 48 83 EC
-                *tclocal++ = 0x48;
-                *tclocal++ = 0x83;
-                *tclocal++ = 0xEC;
-                *tclocal++ = static_cast<uint8_t>(stackNeeded);
+                // call rax
+                *ptr++ = 0xFF;
+                *ptr++ = 0xD0;
+
+                // 0x48, 0x83, 0xC4, 20, // add rsp, 28
+                *ptr++ = 0x48;
+                *ptr++ = 0x83;
+                *ptr++ = 0xC4;
+                *ptr++ = static_cast<uint8_t>(stackNeeded);
+
+                // ret
+                *ptr++ = 0xC3;
+
+
+                // write MAGIC
+                *(uint32_t*)ptr = 0x19128819, ptr += sizeof(uint32_t);
+
+                assert(ptr - thunkLocal == thunkSize);
+                auto finalThunkCode = xxmemdup(hProcess, thunkLocal, thunkSize, PAGE_EXECUTE_READWRITE);
+
+                result = rpcall1(option, hProcess, finalThunkCode, args[0].value.ptr, exitCode);
+
+                free(thunkLocal);
             }
-            else {
-                // 48 83 EC
-                *tclocal++ = 0x48;
-                *tclocal++ = 0x81;
-                *tclocal++ = 0xEC;
-                *(uint32_t*)tclocal = stackNeeded, tclocal += sizeof(uint32_t);
+            else { // > 4 parameters
             }
         }
         else {
-
+            // No thunk code needed, call directly
+            result = rpcall1(option, hProcess, procAddress, args[0].value.ptr, exitCode);
         }
     }
-    else {
-        // No thunk code needed.
-    }
+    else { // RtlCreateUserThread + RtlExitUserThread
+        const unsigned char rpc_thunk_code_template[] = {
+#if _ENABLE_INJECT_DEBUG
+            0xCC,
+#endif
+            0x48, 0x83, 0xEC, 0x28,                                         // sub         rsp,28h ; 4 parameters + ret address = 4 * 8 + 8 = 40 = 28h
+            // 0x49, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov         r9,0
+            // 0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov         r8,0
+            // 0x48, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov         rdx,0
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov         rax,0; The remote Proc
+            0xFF, 0xD0,                                                 // call        rax; call LdrLoadDll
+            0x48, 0x83, 0xC4, 0x28,                                     // add         rsp,28h
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov         rax,2222222222222222h; Address of RtlExitUserThread
+        };
+        const unsigned char rpc_thunk_code_exit[] = {
+            0x33, 0xC9,                                                 // xor         ecx,ecx; exit code: 0
+            0x48, 0xFF, 0xE0,                                           // jmp         rax; jmp to RtlExitUserThread
+            0x19, 0x88, 0x12, 0x19                                      // MAGIC 19881219
+        };
 
+        auto thunkSize = sizeof(rpc_thunk_code_template) + sizeof(rpc_thunk_code_template) + 10 * (formatc - 1);
+        auto stackNeeded = calc_stack_size(formatc);
+
+        auto thunkLocal = (unsigned char*)calloc(1, thunkSize);
+        auto ptr = thunkLocal;
+#if _ENABLE_INJECT_DEBUG
+        *ptr++ = 0xCC;
+#endif
+        // sub rsp, stackNeeded;
+        *ptr++ = 0x48;
+        *ptr++ = 0x83;
+        *ptr++ = 0xEC;
+        *ptr++ = static_cast<uint8_t>(stackNeeded);
+
+        // mov rdx, ?; 2nd arg
+        *(uint16_t*)ptr = 0xBA48, ptr += sizeof(uint16_t);
+        *(uint64_t*)ptr = args[1].value.valueint, ptr += sizeof(uint64_t);
+        if (formatc > 2) {
+            // mov r8, ?; 3rd arg
+            *(uint16_t*)ptr = 0xB849, ptr += sizeof(uint16_t);
+            *(uint64_t*)ptr = args[2].value.valueint, ptr += sizeof(uint64_t);
+            if (formatc > 3) {
+                // mov r9, ? 4th arg
+                *(uint16_t*)ptr = 0xB949, ptr += sizeof(uint16_t);
+                *(uint64_t*)ptr = args[3].value.valueint, ptr += sizeof(uint64_t);
+            }
+        }
+
+        // mov rax, ?; Address of The function
+        *(uint16_t*)ptr = 0xB848, ptr += sizeof(uint16_t);
+        *(uint64_t*)ptr = reinterpret_cast<uint64_t>(procAddress), ptr += sizeof(uint64_t);
+
+        // call rax
+        *ptr++ = 0xFF;
+        *ptr++ = 0xD0;
+
+        // 0x48, 0x83, 0xC4, 20, // add rsp, 28
+        *ptr++ = 0x48;
+        *ptr++ = 0x83;
+        *ptr++ = 0xC4;
+        *ptr++ = static_cast<uint8_t>(stackNeeded);
+
+        auto ntdll = GetModuleHandle(L"ntdll.dll");
+        auto RtlExitUserThread = GetProcAddress(ntdll, "RtlExitUserThread");
+
+        // RtlUserExitThread
+        *(uint16_t*)ptr = 0xB848, ptr += sizeof(uint16_t);
+        *(uint64_t*)ptr = reinterpret_cast<uint64_t>(RtlExitUserThread), ptr += sizeof(uint64_t);
+
+#if 0
+        // jmp rax;
+        *ptr++ = 0x48;
+        *ptr++ = 0xFF;
+        *ptr++ = 0xE0;
+
+        // write MAGIC
+        *(uint32_t*)ptr = 0x19128819, ptr += sizeof(uint32_t);
+#endif
+        memcpy(ptr, rpc_thunk_code_exit, sizeof(rpc_thunk_code_exit)), ptr += sizeof(rpc_thunk_code_exit);
+
+        assert(ptr - thunkLocal == thunkSize);
+        auto finalThunkCode = xxmemdup(hProcess, thunkLocal, thunkSize, PAGE_EXECUTE_READWRITE);
+
+        auto RtlCreateUserThread = (RtlCreateUserThreadProc)GetProcAddress(ntdll, "RtlCreateUserThread");
+
+        struct {
+            DWORD64 UniqueProcess;
+            DWORD64 UniqueThread;
+        } clientId;
+
+        HANDLE hRemoteThread = INVALID_HANDLE_VALUE;
+        int ret = RtlCreateUserThread(
+            hProcess,				 // ProcessHandle
+            nullptr,                 // SecurityDescriptor
+            (DWORD64)FALSE,          // CreateSuspended
+            (DWORD64)0,              // StackZeroBits
+            nullptr,                 // StackReserved
+            nullptr,                 // StackCommit
+            finalThunkCode,	         // StartAddress
+            nullptr,                 // StartParameter
+            &hRemoteThread,          // ThreadHandle
+            &clientId);              // ClientID)
+
+        if (INVALID_HANDLE_VALUE != hRemoteThread)
+        {
+            WaitForSingleObject(hRemoteThread, INFINITE);
+        }
+        else {
+            result = false;
+        }
+
+        // TODO: free memory
+        free(thunkLocal);
+    }
 
     return result;
 }
