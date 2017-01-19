@@ -5,7 +5,7 @@
 #include <vector>
 #include <assert.h>
 
-#define _ENABLE_INJECT_DEBUG 1
+#define _ENABLE_INJECT_DEBUG 0
 
 #define sz_align(d,a) (((d) + ((a) - 1)) & ~((a) - 1))  
 #define calc_stack_size(n) sz_align((n) * 8, 16) + 8
@@ -262,11 +262,19 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 { // FOR API: CreateRemoteThread
     if (option != 0 && option != 1)
         return false; // Invalid option
-
-    HMODULE hModule = GetModuleHandleW(lpModuleName);
-    if (hModule == nullptr)
-        return false;
-    FARPROC procAddress = GetProcAddress(hModule, lpProcName);
+    
+    FARPROC procAddress = nullptr;
+    
+    if(lpModuleName != nullptr) {
+        HMODULE hModule = GetModuleHandleW(lpModuleName);
+        if (hModule == nullptr)
+            return false;
+        procAddress = GetProcAddress(hModule, lpProcName);
+    }
+    else {
+        procAddress = reinterpret_cast<FARPROC>(strtoull(lpProcName, nullptr, 10));
+    }
+    
     if (procAddress == nullptr)
         return false;
 
