@@ -5,6 +5,8 @@
 #include <vector>
 #include <assert.h>
 
+#define _WAITING_DEBUGGER_ATTACH 0
+
 #define _ENABLE_INJECT_DEBUG 0
 
 #define sz_align(d,a) (((d) + ((a) - 1)) & ~((a) - 1))  
@@ -89,39 +91,39 @@ void split(_Elem* s, const _Elem delim, const _Fty& op)
 }
 
 inline
-void* xxalloc(HANDLE hProcess, size_t size, DWORD flProtect = PAGE_READWRITE)
+void* rpalloc(HANDLE hProcess, size_t size, DWORD flProtect = PAGE_READWRITE)
 {
     return VirtualAllocEx(hProcess, NULL, size, MEM_COMMIT, flProtect);
 }
 
 inline
-void xxfree(HANDLE hProcess, void* p)
+void rpfree(HANDLE hProcess, void* p)
 {
     VirtualFreeEx(hProcess, p, 0, MEM_RELEASE);
 }
 
 inline
-BOOL xxwrite(HANDLE hProcess, void*p, const void* data, size_t size)
+BOOL rpwrite(HANDLE hProcess, void*p, const void* data, size_t size)
 {
     return WriteProcessMemory(hProcess, p, data, size, NULL);
 }
 
 inline
-void* xxmemdup(HANDLE hProcess, const void* data, size_t size, DWORD fProtect = PAGE_READWRITE)
+void* rpmemdup(HANDLE hProcess, const void* data, size_t size, DWORD fProtect = PAGE_READWRITE)
 {
-    auto vmem = xxalloc(hProcess, size, fProtect);
-    xxwrite(hProcess, vmem, data, size);
+    auto vmem = rpalloc(hProcess, size, fProtect);
+    rpwrite(hProcess, vmem, data, size);
     return vmem;
 }
 
-char* xxstrdup(HANDLE hProcess, const char* str)
+char* rpstrdup(HANDLE hProcess, const char* str)
 {
-    return (char*)xxmemdup(hProcess, str, strlen(str) + 1);
+    return (char*)rpmemdup(hProcess, str, strlen(str) + 1);
 }
 
-wchar_t* xxwcsdup(HANDLE hProcess, const wchar_t* str)
+wchar_t* rpwcsdup(HANDLE hProcess, const wchar_t* str)
 {
-    return (wchar_t*)xxmemdup(hProcess, str, (wcslen(str) + 1) << 1);
+    return (wchar_t*)rpmemdup(hProcess, str, (wcslen(str) + 1) << 1);
 }
 
 /*
@@ -163,7 +165,10 @@ void*                   RtlExitUserThread;
 
 int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 {
-    // MessageBox(nullptr, L"waiting for debugger to attach!", L"Tips", MB_OK);
+#if _WAITING_DEBUGGER_ATTACH
+    MessageBox(nullptr, L"waiting for debugger to attach!", L"Tips", MB_OK);
+#endif
+
     int ret = -1;
 
     auto ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -262,21 +267,19 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 { // FOR API: CreateRemoteThread
     if (option != 0 && option != 1)
         return false; // Invalid option
-    
-    FARPROC procAddress = nullptr;
-    
-    if(lpModuleName != nullptr) {
+    uint64_t procAddress = 0  ;
+    if (wcscmp(lpModuleName, L"null") != 0) {
         HMODULE hModule = GetModuleHandleW(lpModuleName);
         if (hModule == nullptr)
             return false;
-        procAddress = GetProcAddress(hModule, lpProcName);
+        procAddress = reinterpret_cast<uint64_t>(GetProcAddress(hModule, lpProcName));
+        if (procAddress == 0)
+            return false;
     }
     else {
-        procAddress = reinterpret_cast<FARPROC>(strtoull(lpProcName, nullptr, 10));
+        // lpProcName is the real remote function address.
+        procAddress = strtoull(lpProcName, nullptr, 10);
     }
-    
-    if (procAddress == nullptr)
-        return false;
 
     int formatc = 0;
     if (argc == 0)
@@ -309,29 +312,29 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
         {
             remoteArg.type = 1;
             auto string = transcode(argv[formatc]);
-            remoteArg.value.valuestring = xxstrdup(hProcess, string);
+            remoteArg.value.valuestring = rpstrdup(hProcess, string);
             free(string);
         }
         else if (wcscmp(s, L"ws") == 0)
         {
             remoteArg.type = 2;
-            remoteArg.value.valuewstring = xxwcsdup(hProcess, argv[formatc]);
+            remoteArg.value.valuewstring = rpwcsdup(hProcess, argv[formatc]);
         }
         else if (wcscmp(s, L"us") == 0)
         {
             remoteArg.type = 3;
 
-            char* struc = (char*)xxalloc(hProcess, sizeof(UNICODE_STRING));
+            char* struc = (char*)rpalloc(hProcess, sizeof(UNICODE_STRING));
 
             WORD length = static_cast<WORD>(wcslen(argv[formatc]));
             auto totalBytes = (length + 1) * 2;
-            auto rbuffer = xxalloc(hProcess, totalBytes);
-            xxwrite(hProcess, rbuffer, argv[formatc], totalBytes);
+            auto rbuffer = rpalloc(hProcess, totalBytes);
+            rpwrite(hProcess, rbuffer, argv[formatc], totalBytes);
 
-            xxwrite(hProcess, struc + offsetof(UNICODE_STRING, MaximumLength), &totalBytes, 2);
+            rpwrite(hProcess, struc + offsetof(UNICODE_STRING, MaximumLength), &totalBytes, 2);
             totalBytes -= sizeof(wchar_t);
-            xxwrite(hProcess, struc + offsetof(UNICODE_STRING, Length), &totalBytes, 2);
-            xxwrite(hProcess, struc + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
+            rpwrite(hProcess, struc + offsetof(UNICODE_STRING, Length), &totalBytes, 2);
+            rpwrite(hProcess, struc + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
 
             remoteArg.appendBuffer = rbuffer;
             remoteArg.value.ptr = struc;
@@ -423,7 +426,7 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 
             // mov rax, ?; Address of The remote Proc
             *(uint16_t*)ptr = 0xB848, ptr += sizeof(uint16_t);
-            *(uint64_t*)ptr = reinterpret_cast<uint64_t>(procAddress), ptr += sizeof(uint64_t);
+            *(uint64_t*)ptr = procAddress, ptr += sizeof(uint64_t);
 
             // call rax; The remote Proc
             *ptr++ = 0xFF;
@@ -451,7 +454,7 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
             }
 
             assert(ptr - thunkLocal == thunkSize);
-            auto finalThunkCode = xxmemdup(hProcess, thunkLocal, thunkSize, PAGE_EXECUTE_READWRITE);
+            auto finalThunkCode = rpmemdup(hProcess, thunkLocal, thunkSize, PAGE_EXECUTE_READWRITE);
 
             result = rpcall(option, hProcess, finalThunkCode, remoteArgs[0].value.ptr, exitCode);
 
@@ -462,7 +465,7 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
     }
     else {
         // No thunk code needed, call directly
-        result = rpcall(option, hProcess, procAddress, remoteArgs[0].value.ptr, exitCode);
+        result = rpcall(option, hProcess, reinterpret_cast<void*>(procAddress), remoteArgs[0].value.ptr, exitCode);
     }
 
 
@@ -472,10 +475,10 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
         if (remoteArg.type != 0) {
 
             if (remoteArg.value.ptr != nullptr)
-                xxfree(hProcess, remoteArg.value.ptr);
+                rpfree(hProcess, remoteArg.value.ptr);
 
             if (remoteArg.appendBuffer != nullptr)
-                xxfree(hProcess, remoteArg.appendBuffer);
+                rpfree(hProcess, remoteArg.appendBuffer);
         }
     }
 
