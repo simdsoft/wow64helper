@@ -12,6 +12,13 @@
 #define sz_align(d,a) (((d) + ((a) - 1)) & ~((a) - 1))  
 #define calc_stack_size(n) sz_align((n) * 8, 16) + 8
 
+enum OptionFlag
+{
+    OptionFlagNull, // Use CreateRemoteThread
+    OptionFlagRaw = 1, // Use RtlCreateUserThread/RtlExitUserThread
+    OptionFlagReturnBool = 2, // Convert Result as Bool value
+};
+
 typedef int(*RtlCreateUserThreadProc)(
     void*,					// ProcessHandle
     void*,                  // SecurityDescriptor
@@ -129,8 +136,8 @@ wchar_t* rpwcsdup(HANDLE hProcess, const wchar_t* str)
 /*
 
 usage:
- wow64helper.exe 1 PID kernelFuncName strParam
- wow64helper.exe 2 PID kernelFuncName pvoid64_value
+      wow64helper.exe 0 PID OSModuleName ModuleProcName paramsTypes [parameters]...
+      wow64helper.exe 1 PID OSModuleName ModuleProcName paramsTypes [parameters]...
 
  #currently supported parameter types
      v; [void]
@@ -142,21 +149,17 @@ usage:
      u8,u16,u32
 
  @remark: all int types use reinterpret_cast, unsigned store also support signed int
- wow64helper.exe 0 PID OSModuleName ModuleProcName paramsTypes [parameters]...
- wow64helper.exe 1 PID OSModuleName ModuleProcName paramsTypes [parameters]...
+ @example:
+         wow64helper.exe 0 13220 kernel.dll GetModuleHandleW ws "kernerl.dll" 
+         wow64helper.exe 1 13220 kernel.dll GetModuleHandleW ws "kernerl.dll"
 
-example:
-         WowRemoteExecuteProc64(1 string arg)         ---> wow64helper.exe 1 2332 GetModuleHandleW "x-studio365.lua.debug.x64.dll"
-         WowRemoteProc64(1 integer arg)               ---> wow64helper.exe 2 2332 FreeLibrary 7393439
-         WowRemoteExecuteKernelProc64(2 integer arg)  ---> wow64helper.exe 3 2332 FreeLibraryAndExitThread 7393439 0
-         WowRemoteInject64                            ---> wow64helper.exe 4 2332
+ @option:0: use kernel32 CreateRemoteThread
+         1: use ntdll RtlCreateUserThread RtlExitUserThread
 
-new example:
 */
 
 /*
- option: 0: use kernel32 CreateRemoteThread
-         1: use ntdll RtlCreateUserThread RtlExitUserThread
+ 
 */
 bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode);
 
@@ -186,7 +189,7 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         int option = wcstol(argv[1], nullptr, 10);
 
         DWORD dwPID = wcstoul(argv[2], nullptr, 10);
-        HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwPID);
+        HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS | PROCESS_VM_OPERATION, FALSE, dwPID);
         if (hProcess == nullptr)
             return ret;
 
@@ -264,9 +267,7 @@ bool rpcall(int option, HANDLE hProcess, void* StartAddress, void* StartParamete
 }
 
 bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode)
-{ // FOR API: CreateRemoteThread
-    if (option != 0 && option != 1)
-        return false; // Invalid option
+{ // FOR API: CreateRemoteThreads
     uint64_t procAddress = 0  ;
     if (wcscmp(lpModuleName, L"null") != 0) {
         HMODULE hModule = GetModuleHandleW(lpModuleName);
@@ -438,11 +439,11 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
             *ptr++ = 0xC4;
             *ptr++ = static_cast<uint8_t>(stackNeeded);
 
-            if (!option) {
+            if (0 == option) {
                 memcpy(ptr, rpc_thunk_code_exit_0, sizeof(rpc_thunk_code_exit_0)), ptr += sizeof(rpc_thunk_code_exit_0);
             }
             else {
-                // mov         rcx,rax // option = 1
+                // mov         rcx,rax // now rcx will as exitCode for call API: RtlExitUserThread(DWORD exitCode)
                 *ptr++ = 0x48;
                 *ptr++ = 0x89;
                 *ptr++ = 0xC1;
