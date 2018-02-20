@@ -149,17 +149,19 @@ usage:
      u8,u16,u32
 
  @remark: all int types use reinterpret_cast, unsigned store also support signed int
- @example:
-         wow64helper.exe 0 13220 kernel.dll GetModuleHandleW ws "kernerl.dll" 
-         wow64helper.exe 1 13220 kernel.dll GetModuleHandleW ws "kernerl.dll"
+ wow64helper.exe 1 PID OSModuleName ModuleProcName paramsTypes [parameters]...
 
- @option:0: use kernel32 CreateRemoteThread
-         1: use ntdll RtlCreateUserThread RtlExitUserThread
+example:
+         WowRemoteExecuteProc64(1 string arg)         ---> wow64helper.exe 1 2332 GetModuleHandleW "some.x64.dll"
+         WowRemoteProc64(1 integer arg)               ---> wow64helper.exe 2 2332 FreeLibrary 7393439
+         WowRemoteExecuteKernelProc64(2 integer arg)  ---> wow64helper.exe 3 2332 FreeLibraryAndExitThread 7393439 0
+         WowRemoteInject64                            ---> wow64helper.exe 4 2332
 
 */
 
 /*
- 
+ option: 0: use kernel32 CreateRemoteThread
+         1: use ntdll RtlCreateUserThread RtlExitUserThread
 */
 bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, char* lpProcName, wchar_t* argt, wchar_t** argv, int argc, DWORD& exitCode);
 
@@ -189,7 +191,7 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         int option = wcstol(argv[1], nullptr, 10);
 
         DWORD dwPID = wcstoul(argv[2], nullptr, 10);
-        HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS | PROCESS_VM_OPERATION, FALSE, dwPID);
+        HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwPID);
         if (hProcess == nullptr)
             return ret;
 
