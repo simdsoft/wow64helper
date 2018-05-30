@@ -32,6 +32,9 @@ typedef int(*RtlCreateUserThreadProc)(
     void* lpClientID    // ClientID)
     );
 
+typedef DWORD(*ZwSuspendProcessProc)(HANDLE);
+typedef DWORD(*ZwResumeProcessProc)(HANDLE);
+
 
 template <class T>
 struct _UNICODE_STRING_T
@@ -167,6 +170,8 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 
 RtlCreateUserThreadProc RtlCreateUserThread;
 void*                   RtlExitUserThread;
+ZwSuspendProcessProc    ZwSuspendProcess;
+ZwResumeProcessProc     ZwResumeProcess;
 
 int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 {
@@ -180,6 +185,8 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     if (ntdll != nullptr) {
         RtlCreateUserThread = (RtlCreateUserThreadProc)GetProcAddress(ntdll, "RtlCreateUserThread");
         RtlExitUserThread = GetProcAddress(ntdll, "RtlExitUserThread");
+		ZwSuspendProcess = (ZwSuspendProcessProc)GetProcAddress(ntdll, "ZwSuspendProcess");
+		ZwResumeProcess = (ZwResumeProcessProc)GetProcAddress(ntdll, "ZwResumeProcess");
     }
 
     auto szCmdLine = GetCommandLine();
@@ -192,8 +199,11 @@ int __stdcall wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
         DWORD dwPID = wcstoul(argv[2], nullptr, 10);
         HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwPID);
+		
         if (hProcess == nullptr)
             return ret;
+
+		ZwSuspendProcess(hProcess);
 
         DWORD exitCode = 0;
 
@@ -223,6 +233,8 @@ bool rpcall(int option, HANDLE hProcess, void* StartAddress, void* StartParamete
             (LPTHREAD_START_ROUTINE)StartAddress, StartParameter, 0, &threadId);
 
         exitCode = 0;
+
+		ZwResumeProcess(hProcess);
         if (hRemoteThread != NULL)
         {
             WaitForSingleObject(hRemoteThread, INFINITE);
@@ -255,6 +267,7 @@ bool rpcall(int option, HANDLE hProcess, void* StartAddress, void* StartParamete
             &hRemoteThread,          // ThreadHandle
             &clientId);              // ClientID)
 
+		ZwResumeProcess(hProcess);
         if (INVALID_HANDLE_VALUE != hRemoteThread)
         {
             WaitForSingleObject(hRemoteThread, INFINITE);
