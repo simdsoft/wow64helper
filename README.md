@@ -6,8 +6,8 @@ Option:
    0: CreateRemoteThread, 1: RtlCreateUserThread + RtlExitUserThread  
   
 paramsTypes:  
-   u64 --> uint64_t or nullptr  
-   s -->     string  
+   uptr --> uintptr_t or nullptr  
+   s -->     string, could be placeholder for ```PHANDLE``` such as ```0000``` for 32bit, ```00000000``` for 64bit
    ws -->   wstring  
    us -->    UNICODE_STRING  
   
