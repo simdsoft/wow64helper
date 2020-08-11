@@ -12,5 +12,7 @@ paramsTypes:
    us -->    UNICODE_STRING  
   
 examples:
-   0 13220 kernel.dll LoadLibraryW ws D:\dummy.dll  
-   1 13220 ntdll.dll LdrLoadDll u64;u64;us;s 0 0 D:\dummy.dll 12345678
+* option=0: 0 13220 kernel.dll LoadLibraryW ws D:\dummy.dll  
+* option=1
+  * x64: 1 13220 ntdll.dll LdrLoadDll uptr;uptr;us;s 0 0 D:\dummy.dll 00000000  
+  * x86: 1 13220 ntdll.dll LdrLoadDll uptr;uptr;us;s 0 0 D:\dummy.dll 0000
