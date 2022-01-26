@@ -75,14 +75,15 @@ struct RemoteArg
 {
 	int type = 0; // 0: integer, 1: string, 2: wstring, 3: UNICODE_STRING
 	union {
-		char* str;
-		wchar_t* wstr;
+		char* s;
+		wchar_t* ws;
 		uintptr_t uptr = 0;
 		void* vptr;
-		UNICODE_STRING* ustr;
+		UNICODE_STRING* us;
 	} value;
 
-	void* usbuf = nullptr; // store unicode string buffer address to avoid call ReadProcessMemory when free it
+	// The remote buffer store the unicode string content
+	void* rbuf = nullptr;
 };
 
 inline
@@ -367,13 +368,13 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 		{
 			remoteArg.type = 1;
 			auto string = transcode(argv[formatc]);
-			remoteArg.value.str = rpstrdup(hProcess, string);
+			remoteArg.value.s = rpstrdup(hProcess, string);
 			free(string);
 		}
 		else if (wcscmp(s, L"ws") == 0)
 		{
 			remoteArg.type = 2;
-			remoteArg.value.wstr = rpwcsdup(hProcess, argv[formatc]);
+			remoteArg.value.ws = rpwcsdup(hProcess, argv[formatc]);
 		}
 		else if (wcscmp(s, L"us") == 0)
 		{
@@ -391,8 +392,8 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 			rpwrite(hProcess, struc + offsetof(UNICODE_STRING, Length), &totalBytes, 2);
 			rpwrite(hProcess, struc + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
 
-			remoteArg.usbuf = rbuffer;
-			remoteArg.value.vptr = struc;
+			remoteArg.value.us = (UNICODE_STRING*)struc;
+			remoteArg.rbuf = rbuffer;
 		}
 		else {
 			// error
@@ -649,8 +650,8 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 			if (remoteArg.value.vptr != nullptr)
 				rpfree(hProcess, remoteArg.value.vptr);
 
-			if (remoteArg.usbuf != nullptr)
-				rpfree(hProcess, remoteArg.usbuf);
+			if (remoteArg.rbuf != nullptr)
+				rpfree(hProcess, remoteArg.rbuf);
 		}
 	}
 
