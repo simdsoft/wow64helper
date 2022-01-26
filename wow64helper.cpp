@@ -380,19 +380,19 @@ bool WowExecuteRemoteProc64(int option, HANDLE hProcess, wchar_t* lpModuleName, 
 		{
 			remoteArg.type = 3;
 
-			char* struc = (char*)rpalloc(hProcess, sizeof(UNICODE_STRING));
+			uint8_t* us = (uint8_t*)rpalloc(hProcess, sizeof(UNICODE_STRING));
 
 			WORD length = static_cast<WORD>(wcslen(argv[formatc]));
 			auto totalBytes = (length + 1) * 2;
 			auto rbuffer = rpalloc(hProcess, totalBytes);
 			rpwrite(hProcess, rbuffer, argv[formatc], totalBytes);
 
-			rpwrite(hProcess, struc + offsetof(UNICODE_STRING, MaximumLength), &totalBytes, 2);
+			rpwrite(hProcess, us + offsetof(UNICODE_STRING, MaximumLength), &totalBytes, 2);
 			totalBytes -= sizeof(wchar_t);
-			rpwrite(hProcess, struc + offsetof(UNICODE_STRING, Length), &totalBytes, 2);
-			rpwrite(hProcess, struc + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
+			rpwrite(hProcess, us + offsetof(UNICODE_STRING, Length), &totalBytes, 2);
+			rpwrite(hProcess, us + offsetof(UNICODE_STRING, Buffer), &rbuffer, sizeof(rbuffer));
 
-			remoteArg.value.us = (UNICODE_STRING*)struc;
+			remoteArg.value.us = (UNICODE_STRING*)us;
 			remoteArg.rbuf = rbuffer;
 		}
 		else {
